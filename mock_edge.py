@@ -1,3 +1,4 @@
+import math
 import os
 import time
 import random
@@ -19,13 +20,23 @@ API_URL_REMOTE = os.environ.get("API_URL_REMOTE")
 # 테스트용 작업자 ID (DB에 미리 Insert 되어있어야 함)
 TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003", "TAG-004", "TAG-005", "TAG-006"]
 
+workers_state = {}
+for wid in TARGET_WORKER_IDS:
+    workers_state[wid] = {
+        "pos_x": random.uniform(-10, 10),
+        "pos_y": random.uniform(-10, 10),
+        "target_x": random.uniform(-10, 10),
+        "target_y": random.uniform(-10, 10),
+        "speed": random.uniform(0.6, 1.2) # 사람마다 걷는 속도가 다름
+    }
+
 def send_payload(wid, payload):
     try:
         # timeout을 설정하여 응답이 늦어지더라도 무한 대기하는 것을 방지합니다.
         if API_URL_LOCAL:
-            requests.post(f"{API_URL_LOCAL}/api/telemetry", json=payload, timeout=3)
+            requests.post(f"{API_URL_LOCAL}/api/telemetry", json=[payload], timeout=3)
         if API_URL_REMOTE:
-            requests.post(f"{API_URL_REMOTE}/api/telemetry", json=payload, timeout=3)
+            requests.post(f"{API_URL_REMOTE}/api/telemetry", json=[payload], timeout=3)
         
         status_msg = "🚨 위험" if payload["is_danger"] or not payload["has_helmet"] else "✅ 정상"
         print(f"[{wid}] {status_msg} | 위치:({payload['pos_x']}, {payload['pos_y']}) | 안전모:{payload['has_helmet']}")
@@ -33,38 +44,50 @@ def send_payload(wid, payload):
         print(f"[{wid}] 전송 에러: {e}")
 
 def simulate_edge_data():
-    # 각 작업자별 현재 위치 저장용 딕셔너리
-    positions = {wid: [random.uniform(-5, 5), random.uniform(-5, 5)] for wid in TARGET_WORKER_IDS}
-
-    # HTTP 요청 지연을 없애기 위해 스레드 풀 생성 (작업자 수만큼 병렬 처리)
-    executor = ThreadPoolExecutor(max_workers=len(TARGET_WORKER_IDS))
-
+    print("🧠 Human-like Movement Simulation 가동 시작...")
+    
     while True:
-        for wid in TARGET_WORKER_IDS:
-            # 위치 이동
-            positions[wid][0] += random.uniform(-0.3, 0.3)
-            positions[wid][1] += random.uniform(-0.3, 0.3)
-            
-            # 로직: 위험구역(X > 10) 여부
-            is_danger = True if positions[wid][0] > 10 else False
-            
-            # 로직: 10% 확률로 안전모를 벗음 (LoRa 데이터 모사)
-            has_helmet = False if random.random() < 0.1 else True
+        payloads = []
 
-            payload = {
+        for wid in TARGET_WORKER_IDS:
+            state = workers_state[wid]
+            
+            dx = state["target_x"] - state["pos_x"]
+            dy = state["target_y"] - state["pos_y"]
+            distance = math.sqrt(dx**2 + dy**2)
+
+            if distance < 1.0:
+                state["target_x"] = random.uniform(-15, 15)
+                state["target_y"] = random.uniform(-15, 15)
+                # 이번 턴에 대기하더라도 현재 위치는 배열에 담아 보내야 하므로 위치만 업데이트 생략
+            else:
+                move_x = (dx / distance) * state["speed"]
+                move_y = (dy / distance) * state["speed"]
+                state["pos_x"] += move_x + random.uniform(-0.1, 0.1)
+                state["pos_y"] += move_y + random.uniform(-0.1, 0.1)
+
+            is_danger = True if state["pos_x"] > 10 else False
+            has_helmet = False if random.random() < 0.05 else True
+
+            payloads.append({
                 "worker_id": wid,
-                "pos_x": round(positions[wid][0], 2),
-                "pos_y": round(positions[wid][1], 2),
+                "pos_x": round(state["pos_x"], 2),
+                "pos_y": round(state["pos_y"], 2),
                 "pos_z": 0.0,
                 "has_helmet": has_helmet,
-                "is_danger": is_danger,
-                "last_updated": "now()"
-            }
+                "is_danger": is_danger
+            })
+        
+        try:
+            res = requests.post(f"{API_URL_LOCAL}/api/telemetry", json=payloads)
+            # res = requests.post(f"{API_URL_REMOTE}/api/telemetry", json=payloads)
+            print(f"📦 [배치 전송 완료] {len(payloads)}명 데이터 일괄 전송 (Status: {res.status_code})")
+        except Exception as e:
+            print(f"전송 에러: {e}")
 
-            executor.submit(send_payload, wid, payload)
-
-        time.sleep(1) # 1초마다 전체 업데이트
+        # 초당 1회 업데이트
+        time.sleep(1)
 
 if __name__ == "__main__":
-    print("Mock Edge Device 가동 시작... (종료: Ctrl+C)")
     simulate_edge_data()
+    

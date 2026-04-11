@@ -5,7 +5,6 @@ import random
 from dotenv import load_dotenv
 from supabase import create_client, Client
 import requests
-from concurrent.futures import ThreadPoolExecutor
 
 # 환경 변수 로드
 load_dotenv()
@@ -29,19 +28,6 @@ for wid in TARGET_WORKER_IDS:
         "target_y": random.uniform(-10, 10),
         "speed": random.uniform(0.6, 1.2) # 사람마다 걷는 속도가 다름
     }
-
-def send_payload(wid, payload):
-    try:
-        # timeout을 설정하여 응답이 늦어지더라도 무한 대기하는 것을 방지합니다.
-        if API_URL_LOCAL:
-            requests.post(f"{API_URL_LOCAL}/api/telemetry", json=[payload], timeout=3)
-        if API_URL_REMOTE:
-            requests.post(f"{API_URL_REMOTE}/api/telemetry", json=[payload], timeout=3)
-        
-        status_msg = "🚨 위험" if payload["is_danger"] or not payload["has_helmet"] else "✅ 정상"
-        print(f"[{wid}] {status_msg} | 위치:({payload['pos_x']}, {payload['pos_y']}) | 안전모:{payload['has_helmet']}")
-    except Exception as e:
-        print(f"[{wid}] 전송 에러: {e}")
 
 def simulate_edge_data():
     print("🧠 Human-like Movement Simulation 가동 시작...")
@@ -80,7 +66,7 @@ def simulate_edge_data():
         
         try:
             res = requests.post(f"{API_URL_LOCAL}/api/telemetry", json=payloads)
-            # res = requests.post(f"{API_URL_REMOTE}/api/telemetry", json=payloads)
+            res = requests.post(f"{API_URL_REMOTE}/api/telemetry", json=payloads)
             print(f"📦 [배치 전송 완료] {len(payloads)}명 데이터 일괄 전송 (Status: {res.status_code})")
         except Exception as e:
             print(f"전송 에러: {e}")

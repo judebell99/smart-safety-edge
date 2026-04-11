@@ -13,7 +13,7 @@ key: str = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
 
 # 테스트용 작업자 ID (DB에 미리 Insert 되어있어야 함)
-TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003"]
+TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003", "TAG-004", "TAG-005", "TAG-006"]
 
 def simulate_edge_data():
     # 각 작업자별 현재 위치 저장용 딕셔너리

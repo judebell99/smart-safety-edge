@@ -1,0 +1,7 @@
+__pycache__/
+.env
+.venv
+venv/
+*.log
+# 하드웨어 설정 관련 파일들
+.DS_Store

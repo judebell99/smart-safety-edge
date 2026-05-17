@@ -17,6 +17,12 @@ API_URL = os.environ.get("API_URL_REMOTE", "http://localhost:8000")
 # DB에 미리 생성해둔 작업자 ID를 사용해야 Foreign Key 에러가 나지 않습니다.
 TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003"]
 
+UWB_TAG_MAPPING = {
+    "5D9A": "TAG-001",
+    "0B68": "TAG-002",
+    "1F09": "TAG-003",
+}
+
 # --- UWB: 인간과 유사한 부드러운 동선 생성을 위한 상태 메모리 ---
 workers_state = {}
 for wid in TARGET_WORKER_IDS:
@@ -50,6 +56,101 @@ def calculate_next_position(wid: str, state: dict) -> dict:
         "pos_z": 0.0 # 평면 이동 가정
     }
 
+class UWBEdgeGateway:
+    def __init__(self, client: httpx.AsyncClient):
+        self.port = os.getenv("UWB_SERIAL_PORT", "/dev/ttyUSB0") # UWB 연결 포트
+        self.baudrate = int(os.getenv("UWB_BAUDRATE", 115200))
+        self.api_endpoint = f"{API_URL}/api/telemetry/uwb"
+        self.http_client = client
+        self.serial_conn = None
+
+    def connect_serial(self) -> bool:
+        """UWB 포트 오픈 및 스트리밍 시작 명령어(lep) 전송"""
+        try:
+            self.serial_conn = serial.Serial(
+                port=self.port, baudrate=self.baudrate,
+                timeout=0.1 # Non-blocking에 가깝게 설정
+            )
+            logging.info(f"📍 [UWB] 포트 오픈 성공: {self.port}")
+            
+            # 스트리밍 명령어 전송
+            self.serial_conn.write(b'lep\r\n')
+            time.sleep(0.1)
+            logging.info("✅ [UWB] 위치 데이터 스트리밍(lep) 요청 완료.")
+            return True
+        except serial.SerialException as e:
+            logging.error(f"❌ [UWB] 시리얼 연결 실패: {e}")
+            return False
+
+    def parse_payload(self, raw_line: str) -> dict:
+        """POS 포맷 데이터를 파싱하여 JSON 형태로 반환"""
+        # 예: POS,0,0B68,2.46,3.20,-0.69,65,x03
+        try:
+            parts = raw_line.strip().split(",")
+            if parts[0] == "POS" and len(parts) >= 7:
+                hw_tag_id = parts[2]
+                
+                # DB에 등록된 Worker ID로 변환 (등록되지 않은 태그면 무시)
+                worker_id = UWB_TAG_MAPPING.get(hw_tag_id)
+                if not worker_id:
+                    return None
+
+                x = float(parts[3])
+                y = float(parts[4])
+                z = float(parts[5])
+                quality = int(parts[6])
+
+                # 품질이 너무 낮으면(예: 40 미만) 데이터 튀는 현상 방지를 위해 무시할 수 있습니다.
+                if quality < 40:
+                    return None
+
+                return {
+                    "worker_id": worker_id,
+                    "pos_x": x,
+                    "pos_y": y,
+                    "pos_z": z
+                }
+        except Exception as e:
+            # 쓰레기 값이나 중간에 짤린 문자가 들어올 수 있으므로 패스
+            pass
+        return None
+
+    async def run_streaming_loop(self):
+        """1초 동안 데이터를 버퍼링하여 최신 좌표만 묶어서 API로 전송"""
+        last_send_time = time.time()
+        batch_buffer = {} # Worker ID를 키로 사용하여 최신 좌표로 덮어쓰기
+
+        logging.info("📍 [UWB] 데이터 수신 및 버퍼링 루프 시작...")
+
+        while True:
+            # 1. 시리얼 버퍼에 데이터가 있으면 읽기
+            if self.serial_conn.in_waiting > 0:
+                raw_line = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
+                parsed_data = self.parse_payload(raw_line)
+                
+                if parsed_data:
+                    # 버퍼에 덮어쓰기 (초당 수십 번 들어와도 마지막 최신 위치만 남음)
+                    batch_buffer[parsed_data["worker_id"]] = parsed_data
+
+            # 2. 1초(1Hz) 주기로 묶어서 FastAPI로 POST 전송
+            current_time = time.time()
+            if current_time - last_send_time >= 1.0:
+                if batch_buffer:
+                    payload_list = list(batch_buffer.values())
+                    try:
+                        res = await self.http_client.post(self.api_endpoint, json=payload_list, timeout=3.0)
+                        logging.info(f"📍 [UWB 전송] {len(payload_list)}개 태그 동기화 완료 (Status: {res.status_code})")
+                    except Exception as e:
+                        logging.warning(f"☁️ [UWB API 오류] {e}")
+                    
+                    # 전송 후 버퍼 비우기
+                    batch_buffer.clear()
+                
+                last_send_time = current_time
+
+            # CPU 점유율 최적화 (이벤트 루프 양보)
+            await asyncio.sleep(0.01)
+
 class LoRaEdgeGateway:
     def __init__(self, client: httpx.AsyncClient):
         self.port = os.getenv("LORA_SERIAL_PORT", "/dev/serial0")
@@ -60,9 +161,11 @@ class LoRaEdgeGateway:
         # FastAPI 서버로의 통신을 위해 외부에서 생성한 AsyncClient 재사용
         self.http_client = client
         
-        self.target_nodes = ["01", "02", "03"]
+        self.target_nodes = ["01"]
+        # self.target_nodes = ["01", "02", "03"]
         self.node_timeout = 2.0  
-        self.poll_interval = 2.0
+        # self.poll_interval = 2.0
+        self.poll_interval = 0.5
 
     def connect_serial(self) -> bool:
         """LoRa 포트 오픈 및 기본 핸드쉐이크"""
@@ -97,7 +200,7 @@ class LoRaEdgeGateway:
                 node_id_hex = payload[0:2] # "01", "02", "03"
                 worker_id = f"TAG-00{int(node_id_hex)}"
                 
-                is_heart_normal = (payload[3] == '1')
+                is_heart_normal = (payload[3] == '1') or True
                 is_pressure_normal = (payload[5] == '1')
                 
                 parsed_data = {
@@ -114,7 +217,7 @@ class LoRaEdgeGateway:
             
         return None
     
-    async def send_to_api(self, parsed_data: dict):
+    async def send_to_api(self, parsed_data: dict, node_id: str):
         """파싱된 데이터를 FastAPI로 전송"""
         if not parsed_data:
             return
@@ -123,9 +226,24 @@ class LoRaEdgeGateway:
         payload_list = [parsed_data]
         
         try:
+            # 라즈베리파이 send_to_api 내부 코드 조각 예시
             res = await self.http_client.post(url, json=payload_list, timeout=3.0)
             if res.status_code == 200:
-                logging.info(f"☁️ [LoRa API 전송] 상태코드: {res.status_code}")
+                response_data = res.json()
+
+                await asyncio.sleep(1)
+
+                print(f"☁️ [LoRa API 응답] {response_data}")
+                if response_data.get("buzzer_on"):
+                    logging.warning(f"부저를 작동시킵니다. 대상: {response_data.get('target_workers')} AT+PSEND={node_id}EE")
+                    if not await self.send_at_command("AT+NWM=0", wait_timeout=1.0): return
+                    if not await self.send_at_command("AT+P2P=923000000:7:125:0:8:15", wait_timeout=1.0): return
+                    if not await self.send_at_command(f"AT+PSEND={node_id}EE", wait_timeout=3.0): return
+                else:
+                    logging.warning(f"부저를 종료시킵니다. 대상: {response_data.get('target_workers')} AT+PSEND={node_id}EF")
+                    if not await self.send_at_command("AT+NWM=0", wait_timeout=1.0): return
+                    if not await self.send_at_command("AT+P2P=923000000:7:125:0:8:15", wait_timeout=1.0): return
+                    if not await self.send_at_command(f"AT+PSEND={node_id}EF", wait_timeout=3.0): return
             else:
                 logging.warning(f"☁️ [LoRa API 실패] 상태코드: {res.status_code} | 응답: {res.text}")
         except Exception as e:
@@ -191,7 +309,7 @@ class LoRaEdgeGateway:
                             
                             parsed_data = self.parse_payload(raw_line)
                             if parsed_data:
-                                await self.send_to_api(parsed_data)
+                                await self.send_to_api(parsed_data, node_id)
                             
                             break 
                     
@@ -215,6 +333,20 @@ async def simulate_uwb(client: httpx.AsyncClient):
             logging.error(f"📍 [UWB 전송 에러]: {e}")
 
         await asyncio.sleep(1.0) # 1초마다 반복
+
+async def run_real_uwb(client: httpx.AsyncClient):
+    uwb_gateway = UWBEdgeGateway(client)
+    if not uwb_gateway.connect_serial():
+        logging.error("📍 [UWB] 실제 모듈이 연결되어 있는지, 포트 권한이 있는지 확인하세요.")
+        return
+
+    try:
+        await uwb_gateway.run_streaming_loop()
+    except asyncio.CancelledError:
+        logging.info("📍 [UWB] 수신 태스크가 취소되었습니다.")
+    finally:
+        if uwb_gateway.serial_conn and uwb_gateway.serial_conn.is_open:
+            uwb_gateway.serial_conn.close()
 
 # --- 비동기 Task 2: LoRa 센서 데이터 전송 (실제 하드웨어 연동) ---
 async def run_real_lora(client: httpx.AsyncClient):
@@ -241,8 +373,8 @@ async def main():
     async with httpx.AsyncClient() as client:
         # asyncio.gather를 사용해 두 개의 무한 루프(UWB, LoRa)를 동시에 병렬로 돌립니다.
         await asyncio.gather(
-            simulate_uwb(client),
-            run_real_lora(client)
+            # run_real_uwb(client),
+            run_real_lora(client),
         )
 
 if __name__ == "__main__":

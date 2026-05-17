@@ -97,8 +97,8 @@ class LoRaEdgeGateway:
                 node_id_hex = payload[0:2] # "01", "02", "03"
                 worker_id = f"TAG-00{int(node_id_hex)}"
                 
-                is_heart_normal = (payload[5] == '1')
-                is_pressure_normal = (payload[7] == '1')
+                is_heart_normal = (payload[3] == '1')
+                is_pressure_normal = (payload[5] == '1')
                 
                 parsed_data = {
                     "worker_id": worker_id,

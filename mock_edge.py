@@ -13,7 +13,7 @@ load_dotenv()
 API_URL = os.environ.get("API_URL_REMOTE", "http://localhost:8000")
 
 # DB에 미리 생성해둔 작업자 ID를 사용해야 Foreign Key 에러가 나지 않습니다.
-TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003", "TAG-004", "TAG-005", "TAG-006"]
+TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003"]
 
 # --- UWB: 인간과 유사한 부드러운 동선 생성을 위한 상태 메모리 ---
 workers_state = {}

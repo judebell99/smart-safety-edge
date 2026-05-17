@@ -1,6 +1,5 @@
 import math
 import os
-import time
 import random
 import asyncio
 import logging
@@ -11,7 +10,7 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
 load_dotenv()
-API_URL = os.environ.get("FASTAPI_ENDPOINT", "http://localhost:8000")
+API_URL = os.environ.get("API_URL_REMOTE", "http://localhost:8000")
 
 # DB에 미리 생성해둔 작업자 ID를 사용해야 Foreign Key 에러가 나지 않습니다.
 TARGET_WORKER_IDS = ["TAG-001", "TAG-002", "TAG-003", "TAG-004", "TAG-005", "TAG-006"]

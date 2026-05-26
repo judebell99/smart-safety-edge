@@ -49,13 +49,11 @@ def calculate_next_position(wid: str, state: dict) -> dict:
     }
 
 def generate_mock_lora_data(wid: str) -> dict:
-    # 95% 확률로 정상, 5% 확률로 비정상(위험) 상황 발생 시뮬레이션
-    is_heart_normal = random.random() >= 0.05
     is_pressure_normal = random.random() >= 0.05
 
     return {
         "worker_id": wid,
-        "is_heart_normal": is_heart_normal,
+        "heart_rate": random.randint(60, 120),
         "is_pressure_normal": is_pressure_normal
     }
 
@@ -83,7 +81,7 @@ async def simulate_lora(client: httpx.AsyncClient):
             res = await client.post(f"{API_URL}/api/telemetry/lora", json=payloads, timeout=5.0)
             
             # 위험 데이터가 있는지 확인하여 로그로 강조
-            danger_count = sum(1 for p in payloads if not p['is_heart_normal'] or not p['is_pressure_normal'])
+            danger_count = sum(1 for p in payloads if not p['heart_rate'] or not p['is_pressure_normal'])
             msg = f"📡 [LoRa] 센서 상태 동기화 (Status: {res.status_code})"
             if danger_count > 0:
                 msg += f" ⚠️ [이상 감지] {danger_count}건 발생!"

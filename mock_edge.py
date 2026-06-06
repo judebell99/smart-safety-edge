@@ -364,14 +364,26 @@ async def run_real_uwb(client: httpx.AsyncClient):
             uwb_gateway.serial_conn.close()
 
 # --- 비동기 Task 2: LoRa 센서 데이터 전송 (실제 하드웨어 연동) ---
-async def run_real_lora(client: httpx.AsyncClient):
+async def run_real_lora(client: httpx.AsyncClient, duration_sec: float = 180.0):
     gateway = LoRaEdgeGateway(client)
-    if not gateway.connect_serial():
-        logging.error("📡 [LoRa] 시리얼 포트를 열 수 없습니다. 실제 모듈이 연결되어 있는지 확인하세요.")
-        return
+    start_time = asyncio.get_event_loop().time()
+    connect_deadline = start_time + duration_sec
+
+    while True:
+        if gateway.connect_serial():
+            break
+
+        if asyncio.get_event_loop().time() >= connect_deadline:
+            logging.error("📡 [LoRa] 3분 동안 시리얼 연결을 시도했으나 실패하여 종료합니다.")
+            return
+
+        logging.error("📡 [LoRa] 시리얼 포트를 열 수 없습니다. 실제 모듈이 연결되어 있는지 확인하세요. 2초 후 다시 시도합니다.")
+        await asyncio.sleep(2.0)
 
     try:
-        await gateway.poll_sequence()
+        await asyncio.wait_for(gateway.poll_sequence(), timeout=duration_sec)
+    except asyncio.TimeoutError:
+        logging.info("📡 [LoRa] 3분 경과로 폴링을 종료합니다.")
     except asyncio.CancelledError:
         logging.info("📡 [LoRa] 태스크가 취소되었습니다.")
     except Exception as e:

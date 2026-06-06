@@ -72,11 +72,56 @@ class UWBEdgeGateway:
                 timeout=0.1 # Non-blocking에 가깝게 설정
             )
             logging.info(f"📍 [UWB] 포트 오픈 성공: {self.port}")
-            
-            # 스트리밍 명령어 전송
-            self.serial_conn.write(b'lep\r\n')
-            time.sleep(0.1)
-            logging.info("✅ [UWB] 위치 데이터 스트리밍(lep) 요청 완료.")
+            # 시리얼 버퍼 초기화 후 먼저 엔터를 보내 dwm> 프롬프트를 유도합니다.
+            try:
+                self.serial_conn.reset_input_buffer()
+                self.serial_conn.reset_output_buffer()
+            except Exception:
+                pass
+
+            logging.info("▶️ [UWB] 초기 엔터 전송으로 dwm> 프롬프트 대기...")
+            self.serial_conn.write(b'\r\n')
+            try:
+                self.serial_conn.flush()
+            except Exception:
+                pass
+            time.sleep(0.2)
+            if self.serial_conn.in_waiting > 0:
+                try:
+                    resp = self.serial_conn.read_all().decode('utf-8', errors='ignore')
+                except Exception:
+                    logging.info("✅ [UWB] 초기 엔터 전송 완료 (응답 바이트 수 신호 확인)")
+            else:
+                logging.warning("⚠️ [UWB] dwm> 프롬프트 응답 없음")
+
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                try:
+                    self.serial_conn.reset_input_buffer()
+                    self.serial_conn.reset_output_buffer()
+                except Exception:
+                    pass
+
+                logging.info(f"▶️ [UWB] lep 요청 시도 {attempt}/{max_retries}...")
+                self.serial_conn.write(b'lep\r\n')
+                try:
+                    self.serial_conn.flush()
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+                # 수신 버퍼가 있는지 확인하여 최소한의 응답 확인
+                if self.serial_conn.in_waiting > 0:
+                    try:
+                        resp = self.serial_conn.read_all().decode('utf-8', errors='ignore')
+                    except Exception:
+                        logging.info("✅ [UWB] lep 요청 전송 완료 (응답 바이트 수 신호 확인)")
+                    return True
+
+                logging.warning(f"⚠️ [UWB] lep 응답 없음 (시도 {attempt})")
+                time.sleep(0.3)
+
+            logging.warning("❌ [UWB] lep 요청에 대한 응답을 받지 못했습니다. 포트는 열려있습니다.")
             return True
         except serial.SerialException as e:
             logging.error(f"❌ [UWB] 시리얼 연결 실패: {e}")
@@ -126,8 +171,10 @@ class UWBEdgeGateway:
             # 1. 시리얼 버퍼에 데이터가 있으면 읽기
             if self.serial_conn.in_waiting > 0:
                 raw_line = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
+
+                # print(raw_line)
                 parsed_data = self.parse_payload(raw_line)
-                
+
                 if parsed_data:
                     # 버퍼에 덮어쓰기 (초당 수십 번 들어와도 마지막 최신 위치만 남음)
                     batch_buffer[parsed_data["worker_id"]] = parsed_data
@@ -381,9 +428,7 @@ async def run_real_lora(client: httpx.AsyncClient, duration_sec: float = 180.0):
         await asyncio.sleep(2.0)
 
     try:
-        await asyncio.wait_for(gateway.poll_sequence(), timeout=duration_sec)
-    except asyncio.TimeoutError:
-        logging.info("📡 [LoRa] 3분 경과로 폴링을 종료합니다.")
+        await gateway.poll_sequence()
     except asyncio.CancelledError:
         logging.info("📡 [LoRa] 태스크가 취소되었습니다.")
     except Exception as e:
@@ -400,7 +445,7 @@ async def main():
     async with httpx.AsyncClient() as client:
         # asyncio.gather를 사용해 두 개의 무한 루프(UWB, LoRa)를 동시에 병렬로 돌립니다.
         await asyncio.gather(
-            # run_real_uwb(client),
+            run_real_uwb(client),
             run_real_lora(client),
         )
 
